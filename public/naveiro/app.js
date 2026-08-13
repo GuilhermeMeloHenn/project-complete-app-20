@@ -1215,14 +1215,25 @@ function openCatModal(id){
 function renderFinPagamento(area){
   area.innerHTML = `<div class="section-title"><h2>Formas de pagamento</h2><button class="btn-sm brass" id="addPm">+ Nova forma</button></div>
     ${DB.paymentMethods.map(p=>`<div class="list-row"><div class="main"><div class="name">${p.name}</div></div>
-      <button class="btn-sm red" data-delpm="${p.id}">Excluir</button></div>`).join('')}`;
-  document.getElementById('addPm').onclick=()=>{
-    const name=prompt("Nome da forma de pagamento:"); if(!name) return;
-    DB.paymentMethods.push({id:uid(), name}); saveDB(); renderFinPagamento(area);
-  };
+      <div class="row-actions"><button class="btn-sm" data-editpm="${p.id}">Editar</button><button class="btn-sm red" data-delpm="${p.id}">Excluir</button></div></div>`).join('')
+      || `<div class="empty">Nenhuma forma de pagamento cadastrada.</div>`}`;
+  document.getElementById('addPm').onclick=()=> openPmModal(null, area);
+  document.querySelectorAll('[data-editpm]').forEach(el=> el.onclick=()=> openPmModal(el.dataset.editpm, area));
   document.querySelectorAll('[data-delpm]').forEach(el=> el.onclick=()=>{
     DB.paymentMethods = DB.paymentMethods.filter(p=>p.id!==el.dataset.delpm); saveDB(); renderFinPagamento(area);
   });
+}
+function openPmModal(id, area){
+  const p = id ? DB.paymentMethods.find(x=>x.id===id) : null;
+  openModal(`<h3>${p?'Editar':'Nova'} forma de pagamento</h3>
+    <div class="field"><label>Nome</label><input id="pmName" value="${p?p.name:''}" placeholder="Ex: Pix"></div>
+    <button class="btn btn-primary" id="pmSave">Salvar</button>`);
+  document.getElementById('pmSave').onclick=()=>{
+    const name=document.getElementById('pmName').value.trim();
+    if(!name){ toast("Informe o nome."); return; }
+    if(p) p.name=name; else DB.paymentMethods.push({id:uid(), name});
+    saveDB(); closeModal(); toast("Forma de pagamento salva."); renderFinPagamento(area);
+  };
 }
 function renderFinCaixa(area){
   const byMethod={};
