@@ -111,6 +111,7 @@ const ROUTES = {
   login: renderLogin,
   signup: renderSignup,
   forgot: renderForgot,
+  reset: renderResetPassword,
   verifyClient: renderVerifyClient,
   verifyBarberPending: renderVerifyBarberPending,
   app: renderApp,
@@ -149,15 +150,36 @@ function renderLogin(){
   document.getElementById('btnGoogle').onclick=doGoogleLogin;
 }
 
-function doLogin(){
+async function doLogin(){
   const email=document.getElementById('loginEmail').value.trim();
   const pass=document.getElementById('loginPass').value;
   const errEl=document.getElementById('loginErr');
-  const u=findUserByEmail(email);
-  if(!u || u.password!==pass){ errEl.textContent="E-mail ou senha inválidos."; errEl.classList.remove('hidden'); return; }
-  if(u.status!=='active'){
-    errEl.textContent = u.role==='barbeiro' ? "Sua conta ainda aguarda aprovação do dono." : "Verifique seu e-mail antes de entrar.";
-    errEl.classList.remove('hidden'); return;
+  const fail = (m)=>{ errEl.textContent=m; errEl.classList.remove('hidden'); };
+  errEl.classList.add('hidden');
+  let u=findUserByEmail(email);
+  if(sbReady()){
+    const btn=document.getElementById('btnLogin'); btn.disabled=true; btn.textContent="Entrando…";
+    try{
+      await sbSignIn(email, pass);
+    }catch(err){
+      btn.disabled=false; btn.textContent="Entrar";
+      return fail(translateAuthError(err.message));
+    }
+    btn.disabled=false; btn.textContent="Entrar";
+    if(!u){
+      u = {id:uid(), name:email.split('@')[0], email, password:"", role:'cliente', status:'active', whatsapp:"", instagram:"", createdAt:Date.now()};
+      DB.users.push(u);
+    }
+    // E-mail confirmado pelo backend → conta passa a existir de fato
+    if(u.role!=='barbeiro' && u.status!=='active'){ u.status='active'; }
+    if(u.role==='barbeiro' && u.status!=='active'){
+      saveDB();
+      return fail("Sua conta ainda aguarda aprovação do dono.");
+    }
+    saveDB();
+  } else {
+    if(!u || u.password!==pass) return fail("E-mail ou senha inválidos.");
+    if(u.status!=='active') return fail(u.role==='barbeiro' ? "Sua conta ainda aguarda aprovação do dono." : "Verifique seu e-mail antes de entrar.");
   }
   state.user=u; state.route='app'; render();
 }
@@ -182,27 +204,56 @@ function renderForgot(){
   <div class="auth-wrap"><div class="auth-card">
     <div class="brand"><div class="brand-mark">💈</div><div class="brand-name">Naveiro</div></div>
     <p class="eyebrow">Recuperar senha</p>
-    <div class="notice">Informe seu e-mail. Vamos simular o envio de um link de redefinição de senha.</div>
+    <div class="notice">Informe seu e-mail cadastrado. Enviaremos um link real para você criar e confirmar uma nova senha.</div>
     <div class="field"><label>E-mail cadastrado</label><input id="fEmail" type="email"></div>
     <div id="fArea"></div>
     <button class="btn btn-primary" id="btnSend">Enviar link de redefinição</button>
     <div class="link-row"><button id="backLogin">← Voltar para login</button><span></span></div>
   </div></div>`);
   document.getElementById('backLogin').onclick=()=>{state.route='login';render();};
-  document.getElementById('btnSend').onclick=()=>{
+  document.getElementById('btnSend').onclick=async ()=>{
     const email=document.getElementById('fEmail').value.trim();
-    const u=findUserByEmail(email);
     const area=document.getElementById('fArea');
-    if(!u){ area.innerHTML=`<div class="notice warn">Não encontramos uma conta com esse e-mail.</div>`; return; }
-    area.innerHTML=`
-      <div class="notice">📧 E-mail de recuperação "enviado" para <b>${email}</b>. (Simulação — clique abaixo para representar o link do e-mail.)</div>
-      <div class="field"><label>Nova senha</label><input id="newPass" type="password"></div>
-      <button class="btn btn-ghost" id="btnReset">Confirmar nova senha</button>`;
-    document.getElementById('btnReset').onclick=()=>{
-      const np=document.getElementById('newPass').value;
-      if(!np || np.length<4){ toast("Senha muito curta."); return; }
-      u.password=np; saveDB(); toast("Senha redefinida! Faça login."); state.route='login'; render();
-    };
+    if(!email){ area.innerHTML=`<div class="notice warn">Informe seu e-mail.</div>`; return; }
+    const btn=document.getElementById('btnSend'); btn.disabled=true; btn.textContent="Enviando…";
+    try{
+      if(!sbReady()) throw new Error("Serviço de e-mail indisponível.");
+      await sbRecover(email);
+      area.innerHTML=`<div class="notice">📧 Enviamos um e-mail para <b>${email}</b> com o link para criar e confirmar uma nova senha. Confira também a caixa de spam.</div>`;
+    }catch(err){
+      area.innerHTML=`<div class="notice warn">${translateAuthError(err.message)}</div>`;
+    }
+    btn.disabled=false; btn.textContent="Enviar link de redefinição";
+  };
+}
+
+/* ---------------- NOVA SENHA (link do e-mail) ---------------- */
+function renderResetPassword(){
+  shell(`
+  <div class="stripe"></div>
+  <div class="auth-wrap"><div class="auth-card">
+    <div class="brand"><div class="brand-mark">💈</div><div class="brand-name">Naveiro</div></div>
+    <p class="eyebrow">Criar nova senha</p>
+    <div id="rsErr" class="err hidden"></div>
+    <div class="field"><label>Nova senha</label><input id="rsPass" type="password"></div>
+    <div class="field"><label>Confirmar nova senha</label><input id="rsPass2" type="password"></div>
+    <button class="btn btn-primary" id="rsSave">Salvar nova senha</button>
+    <div class="link-row"><button id="backLogin">← Voltar para login</button><span></span></div>
+  </div></div>`);
+  document.getElementById('backLogin').onclick=()=>{state.route='login';render();};
+  document.getElementById('rsSave').onclick=async ()=>{
+    const p1=document.getElementById('rsPass').value, p2=document.getElementById('rsPass2').value;
+    const errEl=document.getElementById('rsErr'); errEl.classList.add('hidden');
+    const fail=(m)=>{ errEl.textContent=m; errEl.classList.remove('hidden'); };
+    if(p1.length<6) return fail("A senha deve ter pelo menos 6 caracteres.");
+    if(p1!==p2) return fail("As senhas não conferem.");
+    try{
+      const data = await sbUpdatePassword(state.tmp.recoveryToken, p1);
+      const local = data && data.email ? findUserByEmail(data.email) : null;
+      if(local){ local.status = local.role==='barbeiro' ? local.status : 'active'; saveDB(); }
+      toast("Senha alterada! Faça login.");
+      state.tmp.recoveryToken=null; state.route='login'; render();
+    }catch(err){ fail(translateAuthError(err.message)); }
   };
 }
 
