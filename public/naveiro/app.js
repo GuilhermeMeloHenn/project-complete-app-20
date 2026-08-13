@@ -976,7 +976,7 @@ function openCommissionModal(barberId){
 
 /* --- Financeiro --- */
 function renderDonoFinanceiro(body){
-  const fsubs=[{k:'visao',l:'Visão geral'},{k:'lancamentos',l:'Lançamentos'},{k:'categorias',l:'Categorias'},{k:'pagamento',l:'Formas de pgto'},{k:'caixa',l:'Fluxo de caixa'}];
+  const fsubs=[{k:'visao',l:'Visão geral'},{k:'lancamentos',l:'Lançamentos'},{k:'relatorio',l:'Relatório de serviços'},{k:'categorias',l:'Categorias'},{k:'pagamento',l:'Formas de pgto'},{k:'caixa',l:'Fluxo de caixa'}];
   state.tmp.finSub = state.tmp.finSub || 'visao';
   body.innerHTML = `<div class="subnav">${fsubs.map(f=>`<button class="${state.tmp.finSub===f.k?'active':''}" data-f="${f.k}">${f.l}</button>`).join('')}</div>
     <div id="finArea"></div>`;
@@ -984,6 +984,7 @@ function renderDonoFinanceiro(body){
   const area = document.getElementById('finArea');
   if(state.tmp.finSub==='visao') renderFinVisaoGeral(area);
   if(state.tmp.finSub==='lancamentos') renderFinLancamentos(area);
+  if(state.tmp.finSub==='relatorio') renderFinRelatorio(area);
   if(state.tmp.finSub==='categorias') renderFinCategorias(area);
   if(state.tmp.finSub==='pagamento') renderFinPagamento(area);
   if(state.tmp.finSub==='caixa') renderFinCaixa(area);
