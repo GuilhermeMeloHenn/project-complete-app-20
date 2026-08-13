@@ -30,6 +30,10 @@ export const Route = createFileRoute("/")({
 function Index() {
   useEffect(() => {
     if (document.getElementById("naveiro-app-script")) return;
+    (window as unknown as { __SB: { url: string; key: string } }).__SB = {
+      url: import.meta.env["VITE_SUPABASE_URL"] as string,
+      key: import.meta.env["VITE_SUPABASE_PUBLISHABLE_KEY"] as string,
+    };
     const s = document.createElement("script");
     s.id = "naveiro-app-script";
     s.src = "/naveiro/app.js";
