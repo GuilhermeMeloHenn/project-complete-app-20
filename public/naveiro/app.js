@@ -1184,5 +1184,18 @@ document.addEventListener('click', (e)=>{
 (async function boot(){
   document.getElementById('root').innerHTML = `<div class="auth-wrap"><div style="color:var(--text-faint);">Carregando…</div></div>`;
   await loadDB();
+  // Links vindos do e-mail (confirmação de cadastro / redefinição de senha)
+  const hash = new URLSearchParams((window.location.hash||'').replace(/^#/,''));
+  const token = hash.get('access_token'); const type = hash.get('type');
+  if(token){
+    history.replaceState(null,'',window.location.pathname);
+    if(type==='recovery'){ state.tmp.recoveryToken=token; state.route='reset'; render(); return; }
+    try{
+      const me = await sbCall('/user', {method:'GET', token});
+      const local = me && me.email ? findUserByEmail(me.email) : null;
+      if(local && local.role!=='barbeiro' && local.status!=='active'){ local.status='active'; saveDB(); }
+      toast("E-mail confirmado! Sua conta está ativa.");
+    }catch(e){ /* link expirado */ }
+  }
   render();
 })();
