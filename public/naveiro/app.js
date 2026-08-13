@@ -286,7 +286,7 @@ function renderSignup(){
     b.onclick=()=>{ if(b.disabled) return; state.tmp.role=b.dataset.role; render(); };
   });
   document.getElementById('backLogin').onclick=()=>{state.route='login';render();};
-  document.getElementById('btnCreate').onclick=()=>{
+  document.getElementById('btnCreate').onclick=async ()=>{
     const name=document.getElementById('suName').value.trim();
     const email=document.getElementById('suEmail').value.trim();
     const pass=document.getElementById('suPass').value;
@@ -295,32 +295,45 @@ function renderSignup(){
     if(findUserByEmail(email)){ errEl.textContent="Já existe uma conta com esse e-mail."; errEl.classList.remove('hidden'); return; }
     const role = state.tmp.role;
     if(role==='dono' && ownerExists()){ errEl.textContent="Já existe um Dono cadastrado."; errEl.classList.remove('hidden'); return; }
+    if(pass.length<6){ errEl.textContent="A senha deve ter pelo menos 6 caracteres."; errEl.classList.remove('hidden'); return; }
+    const btn=document.getElementById('btnCreate');
+    if(sbReady()){
+      btn.disabled=true; btn.textContent="Criando…";
+      try{ await sbSignUp(email, pass); }
+      catch(err){
+        btn.disabled=false; btn.textContent="Criar conta";
+        errEl.textContent=translateAuthError(err.message); errEl.classList.remove('hidden'); return;
+      }
+      btn.disabled=false; btn.textContent="Criar conta";
+    }
     const u = {id:uid(), name, email, password:pass, role,
-      status: role==='dono' ? 'active' : 'pending',
+      status: 'pending',
       whatsapp:"", instagram:"", createdAt:Date.now()};
     DB.users.push(u);
     if(role==='barbeiro'){ DB.pendingBarberApprovals.push(u.id); }
     saveDB();
     state.tmp.pendingUser = u.id;
-    if(role==='dono'){ toast("Conta de Dono criada com sucesso!"); state.route='login'; render(); }
-    else if(role==='cliente'){ state.route='verifyClient'; render(); }
-    else { state.route='verifyBarberPending'; render(); }
+    if(role==='barbeiro'){ state.route='verifyBarberPending'; }
+    else { state.route='verifyClient'; }
+    render();
   };
 }
 
 function renderVerifyClient(){
   const u = DB.users.find(x=>x.id===state.tmp.pendingUser);
+  const simulate = !sbReady();
   shell(`
   <div class="stripe"></div>
   <div class="auth-wrap"><div class="auth-card">
     <div class="brand"><div class="brand-mark">💈</div><div class="brand-name">Naveiro</div></div>
     <h2 style="margin-bottom:10px;">Verifique seu e-mail</h2>
-    <div class="notice">📧 Enviamos um e-mail de verificação para <b>${u?u.email:''}</b>. Sua conta só existe de fato depois de confirmar. (Simulação: clique no botão abaixo para representar o clique no link do e-mail.)</div>
-    <button class="btn btn-primary" id="btnVerify">Simular clique no link de verificação</button>
+    <div class="notice">📧 Enviamos um e-mail de verificação para <b>${u?u.email:''}</b>. Sua conta só existe de fato depois que você clicar no link de confirmação. Confira também a caixa de spam.</div>
+    ${simulate?'<button class="btn btn-primary" id="btnVerify">Simular clique no link de verificação</button>':''}
     <div class="link-row"><button id="backLogin">← Voltar para login</button><span></span></div>
   </div></div>`);
   document.getElementById('backLogin').onclick=()=>{state.route='login';render();};
-  document.getElementById('btnVerify').onclick=()=>{
+  const bv=document.getElementById('btnVerify');
+  if(bv) bv.onclick=()=>{
     if(u){ u.status='active'; saveDB(); }
     toast("E-mail verificado! Conta ativa.");
     state.route='login'; render();
@@ -334,7 +347,7 @@ function renderVerifyBarberPending(){
   <div class="auth-wrap"><div class="auth-card">
     <div class="brand"><div class="brand-mark">💈</div><div class="brand-name">Naveiro</div></div>
     <h2 style="margin-bottom:10px;">Aguardando aprovação</h2>
-    <div class="notice">Enviamos uma notificação de aprovação para o e-mail do <b>Dono</b>. Sua conta de barbeiro (${u?u.email:''}) será ativada assim que ele aprovar dentro do app, na aba Dono → Equipe.</div>
+    <div class="notice">📧 Enviamos um e-mail de verificação para <b>${u?u.email:''}</b> — confirme-o primeiro. Depois disso, sua conta de barbeiro será ativada quando o <b>Dono</b> aprovar na aba Dono → Equipe.</div>
     <button class="btn btn-ghost" id="backLogin">← Voltar para login</button>
   </div></div>`);
   document.getElementById('backLogin').onclick=()=>{state.route='login';render();};
