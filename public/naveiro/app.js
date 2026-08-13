@@ -1011,7 +1011,10 @@ function renderFinVisaoGeral(area){
   const prevAttend=DB.appointments.filter(a=>{const d=new Date(a.date);return a.status==='done'&&d.getMonth()===prev.getMonth()&&d.getFullYear()===prev.getFullYear();}).length;
 
   const months12=[]; for(let i=11;i>=0;i--){ const d=new Date(curY,curM-i,1); months12.push({m:d.getMonth(),y:d.getFullYear(),rev:allRevenueForMonth(d.getMonth(),d.getFullYear())}); }
-  const maxRev = Math.max(1,...months12.map(x=>x.rev));
+  months12.forEach(x=> x.exp = allExpenseForMonth(x.m,x.y));
+  const maxBar = Math.max(1,...months12.map(x=>Math.max(x.rev,x.exp)));
+  const revSlices = revenueBreakdown(curM,curY);
+  const expSlices = expenseBreakdown(curM,curY);
 
   area.innerHTML = `
     <div class="grid g4">
@@ -1023,13 +1026,135 @@ function renderFinVisaoGeral(area){
         <div class="delta ${curAttend>=prevAttend?'up':'down'}">${pct(curAttend,prevAttend)>=0?'+':''}${pct(curAttend,prevAttend)}% vs. anterior</div></div>
       <div class="stat-card"><div class="label">Despesas do mês</div><div class="value">${money(curExp)}</div></div>
     </div>
-    <div class="section-title"><h2>Faturamento — últimos 12 meses</h2></div>
-    <div class="card" style="display:flex;align-items:flex-end;gap:6px;height:180px;padding-top:24px;">
+    <div class="section-title"><h2>Composição do mês</h2></div>
+    <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;">
+      ${pieCardHtml("Receitas do mês", revSlices, curRev)}
+      ${pieCardHtml("Despesas do mês", expSlices, curExp)}
+    </div>
+    <div class="section-title"><h2>Receitas x Despesas — últimos 12 meses</h2></div>
+    <div class="card">
+      <div style="display:flex;gap:16px;margin-bottom:12px;font-size:12px;color:var(--text-dim);">
+        <span><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--green);margin-right:6px;"></i>Receita</span>
+        <span><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--red);margin-right:6px;"></i>Despesa</span>
+      </div>
+      <div style="display:flex;align-items:flex-end;gap:8px;height:180px;">
       ${months12.map(x=>`<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;">
-        <div style="width:100%;background:linear-gradient(180deg,var(--brass-glow),var(--brass));border-radius:4px 4px 0 0;height:${Math.max(4,(x.rev/maxRev)*120)}px;" title="${money(x.rev)}"></div>
+        <div style="display:flex;align-items:flex-end;gap:2px;width:100%;height:130px;">
+          <div style="flex:1;background:var(--green);border-radius:3px 3px 0 0;height:${Math.max(3,(x.rev/maxBar)*130)}px;" title="Receita ${monthName(x.m)}: ${money(x.rev)}"></div>
+          <div style="flex:1;background:var(--red);border-radius:3px 3px 0 0;height:${Math.max(3,(x.exp/maxBar)*130)}px;" title="Despesa ${monthName(x.m)}: ${money(x.exp)}"></div>
+        </div>
         <span style="font-size:10px;color:var(--text-faint);">${monthName(x.m)}</span>
       </div>`).join('')}
+      </div>
     </div>`;
+}
+
+const PIE_COLORS = ["#c9a227","#e0b83a","#4caf7d","#3f8cff","#b45cd6","#ff8a3d","#e05252","#7a8b99","#2fb0a5","#d4d4d4"];
+function revenueBreakdown(m,y){
+  const map={};
+  DB.appointments.filter(a=>{ const d=new Date(a.date); return a.status==='done' && d.getMonth()===m && d.getFullYear()===y; })
+    .forEach(a=>{ const sv=DB.services.find(x=>x.id===a.serviceId); const name = sv? sv.name : 'Serviços';
+      map[name]=(map[name]||0)+(sv?sv.price:0); });
+  DB.financeEntries.filter(e=>{ const d=new Date(e.date); return e.type==='receita' && d.getMonth()===m && d.getFullYear()===y; })
+    .forEach(e=>{ const c=DB.categories.find(c=>c.id===e.categoryId); const name=c?c.name:'Outras receitas';
+      map[name]=(map[name]||0)+Number(e.amount); });
+  return Object.entries(map).map(([label,value])=>({label,value})).sort((a,b)=>b.value-a.value);
+}
+function expenseBreakdown(m,y){
+  const map={};
+  DB.financeEntries.filter(e=>{ const d=new Date(e.date); return e.type==='despesa' && d.getMonth()===m && d.getFullYear()===y; })
+    .forEach(e=>{ const c=DB.categories.find(c=>c.id===e.categoryId); const name=c?c.name:'Outras despesas';
+      map[name]=(map[name]||0)+Number(e.amount); });
+  return Object.entries(map).map(([label,value])=>({label,value})).sort((a,b)=>b.value-a.value);
+}
+function pieCardHtml(title, slices, total){
+  if(!total || slices.length===0){
+    return `<div class="card"><div style="font-size:13px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.6px;margin-bottom:10px;">${title}</div>
+      <div class="empty">Sem dados neste mês.</div></div>`;
+  }
+  let acc=0;
+  const stops = slices.map((s,i)=>{
+    const start=(acc/total)*100; acc+=s.value; const end=(acc/total)*100;
+    return `${PIE_COLORS[i%PIE_COLORS.length]} ${start}% ${end}%`;
+  }).join(',');
+  return `<div class="card">
+    <div style="font-size:13px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.6px;margin-bottom:10px;">${title}</div>
+    <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;">
+      <div style="width:150px;height:150px;border-radius:50%;background:conic-gradient(${stops});flex:none;"></div>
+      <div style="flex:1;min-width:140px;">
+        ${slices.map((s,i)=>`<div style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:6px;">
+          <i style="width:10px;height:10px;border-radius:2px;background:${PIE_COLORS[i%PIE_COLORS.length]};flex:none;"></i>
+          <span style="flex:1;">${s.label}</span>
+          <span style="font-family:var(--font-mono);">${money(s.value)} · ${Math.round((s.value/total)*100)}%</span>
+        </div>`).join('')}
+        <div style="border-top:1px solid var(--line);margin-top:8px;padding-top:8px;font-size:12px;display:flex;justify-content:space-between;">
+          <b>Total</b><b style="font-family:var(--font-mono);">${money(total)}</b></div>
+      </div>
+    </div>
+  </div>`;
+}
+
+/* --- Relatório de serviços prestados --- */
+function renderFinRelatorio(area){
+  const t = state.tmp;
+  if(!t.repFrom){ const d=new Date(); t.repFrom = new Date(d.getFullYear(),d.getMonth(),1).toISOString().slice(0,10); }
+  if(!t.repTo) t.repTo = todayISO();
+  if(!t.repMode) t.repMode = 'periodo';
+  const from=t.repFrom, to=t.repTo;
+  const done = DB.appointments.filter(a=>a.status==='done' && a.date>=from && a.date<=to);
+  const svcName = id => { const s=DB.services.find(x=>x.id===id); return s? s.name : 'Serviço removido'; };
+  const svcPrice = id => { const s=DB.services.find(x=>x.id===id); return s? s.price : 0; };
+
+  const byService={};
+  done.forEach(a=>{ const k=a.serviceId; byService[k]=byService[k]||{qty:0,total:0}; byService[k].qty++; byService[k].total+=svcPrice(a.serviceId); });
+  const totQty=done.length, totVal=Object.values(byService).reduce((s,x)=>s+x.total,0);
+
+  const byDay={};
+  done.forEach(a=>{ byDay[a.date]=byDay[a.date]||{}; const d=byDay[a.date];
+    d[a.serviceId]=d[a.serviceId]||{qty:0,total:0}; d[a.serviceId].qty++; d[a.serviceId].total+=svcPrice(a.serviceId); });
+
+  area.innerHTML = `
+    <div class="section-title"><h2>Relatório de serviços prestados</h2></div>
+    <div class="card" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px;">
+      <div class="field" style="margin:0;"><label>De</label><input id="repFrom" type="date" value="${from}"></div>
+      <div class="field" style="margin:0;"><label>Até</label><input id="repTo" type="date" value="${to}"></div>
+      <div class="field" style="margin:0;"><label>Agrupar</label>
+        <select id="repMode">
+          <option value="periodo" ${t.repMode==='periodo'?'selected':''}>Por período (total)</option>
+          <option value="dia" ${t.repMode==='dia'?'selected':''}>Por dia</option>
+        </select></div>
+      <button class="btn-sm brass" id="repGo">Gerar</button>
+    </div>
+    <div class="grid g4" style="margin-bottom:12px;">
+      <div class="stat-card"><div class="label">Serviços prestados</div><div class="value">${totQty}</div></div>
+      <div class="stat-card"><div class="label">Valor total</div><div class="value">${money(totVal)}</div></div>
+      <div class="stat-card"><div class="label">Ticket médio</div><div class="value">${money(totQty?totVal/totQty:0)}</div></div>
+    </div>
+    ${totQty===0 ? `<div class="empty">Nenhum serviço prestado nesse período.</div>` :
+      (t.repMode==='periodo'
+        ? `<table><thead><tr><th>Serviço</th><th>Quantidade</th><th>Valor total</th></tr></thead><tbody>
+            ${Object.entries(byService).sort((a,b)=>b[1].total-a[1].total).map(([id,v])=>
+              `<tr><td>${svcName(id)}</td><td>${v.qty}</td><td>${money(v.total)}</td></tr>`).join('')}
+            <tr><td><b>Total</b></td><td><b>${totQty}</b></td><td><b>${money(totVal)}</b></td></tr>
+          </tbody></table>`
+        : Object.keys(byDay).sort().reverse().map(day=>{
+            const rows=Object.entries(byDay[day]);
+            const dq=rows.reduce((s,[,v])=>s+v.qty,0), dv=rows.reduce((s,[,v])=>s+v.total,0);
+            return `<div class="card" style="margin-bottom:12px;">
+              <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
+                <b>${formatDatePt(day)}</b>
+                <span style="font-family:var(--font-mono);color:var(--brass-glow);">${dq} serviço(s) · ${money(dv)}</span></div>
+              <table><thead><tr><th>Serviço</th><th>Quantidade</th><th>Valor</th></tr></thead><tbody>
+                ${rows.sort((a,b)=>b[1].total-a[1].total).map(([id,v])=>`<tr><td>${svcName(id)}</td><td>${v.qty}</td><td>${money(v.total)}</td></tr>`).join('')}
+              </tbody></table></div>`;
+          }).join(''))}`;
+
+  area.querySelector('#repGo').onclick=()=>{
+    t.repFrom=area.querySelector('#repFrom').value||from;
+    t.repTo=area.querySelector('#repTo').value||to;
+    t.repMode=area.querySelector('#repMode').value;
+    renderFinRelatorio(area);
+  };
 }
 function renderFinLancamentos(area){
   area.innerHTML = `
