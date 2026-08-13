@@ -9,6 +9,45 @@ const DB_KEY = "naveiro_db_v1";
 let DB = null;
 let state = { route:"login", user:null, sub:{cliente:"home", barbeiro:"dashboard", dono:"servicos"}, tmp:{} };
 
+/* ---- storage (persistência local com fallback) ---- */
+if(!window.storage){
+  window.storage = {
+    async get(key){ const v = localStorage.getItem(key); return v===null? null : {value:v}; },
+    async set(key, value){ localStorage.setItem(key, value); },
+  };
+}
+
+/* ---- Backend de autenticação (e-mails reais) ---- */
+const SB = window.__SB || {url:"", key:""};
+const sbReady = () => Boolean(SB.url && SB.key);
+async function sbCall(path, {method="POST", body=null, token=null}={}){
+  const headers = { "Content-Type":"application/json", apikey: SB.key };
+  headers["Authorization"] = `Bearer ${token || SB.key}`;
+  const res = await fetch(`${SB.url}/auth/v1${path}`, { method, headers, body: body?JSON.stringify(body):undefined });
+  let data = null; try{ data = await res.json(); }catch(e){}
+  if(!res.ok){
+    const msg = (data && (data.msg || data.error_description || data.message || data.error)) || "Falha na comunicação.";
+    throw new Error(msg);
+  }
+  return data;
+}
+const sbSignUp = (email,password) =>
+  sbCall(`/signup?redirect_to=${encodeURIComponent(window.location.origin + "/")}`, {body:{email,password}});
+const sbSignIn = (email,password) => sbCall(`/token?grant_type=password`, {body:{email,password}});
+const sbRecover = (email) =>
+  sbCall(`/recover?redirect_to=${encodeURIComponent(window.location.origin + "/")}`, {body:{email}});
+const sbUpdatePassword = (token,password) => sbCall(`/user`, {method:"PUT", token, body:{password}});
+
+function translateAuthError(msg){
+  const m=(msg||"").toLowerCase();
+  if(m.includes("email not confirmed")) return "Confirme seu e-mail antes de entrar. Verifique sua caixa de entrada.";
+  if(m.includes("invalid login")) return "E-mail ou senha inválidos.";
+  if(m.includes("already registered") || m.includes("already been registered")) return "Já existe uma conta com esse e-mail.";
+  if(m.includes("password should be")) return "A senha deve ter pelo menos 6 caracteres.";
+  if(m.includes("rate limit") || m.includes("too many")) return "Muitas tentativas. Aguarde alguns instantes.";
+  return msg || "Erro inesperado.";
+}
+
 const uid = () => Math.random().toString(36).slice(2,10);
 const todayISO = () => new Date().toISOString().slice(0,10);
 const money = n => (Number(n)||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
@@ -62,7 +101,7 @@ function toast(msg){
 }
 
 /* ---------------- AUTH HELPERS ---------------- */
-function ownerExists(){ return DB.users.some(u=>u.role==='dono' && u.status==='active'); }
+function ownerExists(){ return DB.users.some(u=>u.role==='dono'); }
 function findUserByEmail(email){ return DB.users.find(u=>u.email.toLowerCase()===email.toLowerCase()); }
 
 function render(){ document.getElementById('root').innerHTML=''; ROUTES[state.route](); }
