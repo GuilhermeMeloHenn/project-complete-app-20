@@ -9,6 +9,45 @@ const DB_KEY = "naveiro_db_v1";
 let DB = null;
 let state = { route:"login", user:null, sub:{cliente:"home", barbeiro:"dashboard", dono:"servicos"}, tmp:{} };
 
+/* ---- storage (persistência local com fallback) ---- */
+if(!window.storage){
+  window.storage = {
+    async get(key){ const v = localStorage.getItem(key); return v===null? null : {value:v}; },
+    async set(key, value){ localStorage.setItem(key, value); },
+  };
+}
+
+/* ---- Backend de autenticação (e-mails reais) ---- */
+const SB = window.__SB || {url:"", key:""};
+const sbReady = () => Boolean(SB.url && SB.key);
+async function sbCall(path, {method="POST", body=null, token=null}={}){
+  const headers = { "Content-Type":"application/json", apikey: SB.key };
+  headers["Authorization"] = `Bearer ${token || SB.key}`;
+  const res = await fetch(`${SB.url}/auth/v1${path}`, { method, headers, body: body?JSON.stringify(body):undefined });
+  let data = null; try{ data = await res.json(); }catch(e){}
+  if(!res.ok){
+    const msg = (data && (data.msg || data.error_description || data.message || data.error)) || "Falha na comunicação.";
+    throw new Error(msg);
+  }
+  return data;
+}
+const sbSignUp = (email,password) =>
+  sbCall(`/signup?redirect_to=${encodeURIComponent(window.location.origin + "/")}`, {body:{email,password}});
+const sbSignIn = (email,password) => sbCall(`/token?grant_type=password`, {body:{email,password}});
+const sbRecover = (email) =>
+  sbCall(`/recover?redirect_to=${encodeURIComponent(window.location.origin + "/")}`, {body:{email}});
+const sbUpdatePassword = (token,password) => sbCall(`/user`, {method:"PUT", token, body:{password}});
+
+function translateAuthError(msg){
+  const m=(msg||"").toLowerCase();
+  if(m.includes("email not confirmed")) return "Confirme seu e-mail antes de entrar. Verifique sua caixa de entrada.";
+  if(m.includes("invalid login")) return "E-mail ou senha inválidos.";
+  if(m.includes("already registered") || m.includes("already been registered")) return "Já existe uma conta com esse e-mail.";
+  if(m.includes("password should be")) return "A senha deve ter pelo menos 6 caracteres.";
+  if(m.includes("rate limit") || m.includes("too many")) return "Muitas tentativas. Aguarde alguns instantes.";
+  return msg || "Erro inesperado.";
+}
+
 const uid = () => Math.random().toString(36).slice(2,10);
 const todayISO = () => new Date().toISOString().slice(0,10);
 const money = n => (Number(n)||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
@@ -62,7 +101,7 @@ function toast(msg){
 }
 
 /* ---------------- AUTH HELPERS ---------------- */
-function ownerExists(){ return DB.users.some(u=>u.role==='dono' && u.status==='active'); }
+function ownerExists(){ return DB.users.some(u=>u.role==='dono'); }
 function findUserByEmail(email){ return DB.users.find(u=>u.email.toLowerCase()===email.toLowerCase()); }
 
 function render(){ document.getElementById('root').innerHTML=''; ROUTES[state.route](); }
@@ -72,6 +111,7 @@ const ROUTES = {
   login: renderLogin,
   signup: renderSignup,
   forgot: renderForgot,
+  reset: renderResetPassword,
   verifyClient: renderVerifyClient,
   verifyBarberPending: renderVerifyBarberPending,
   app: renderApp,
@@ -110,15 +150,36 @@ function renderLogin(){
   document.getElementById('btnGoogle').onclick=doGoogleLogin;
 }
 
-function doLogin(){
+async function doLogin(){
   const email=document.getElementById('loginEmail').value.trim();
   const pass=document.getElementById('loginPass').value;
   const errEl=document.getElementById('loginErr');
-  const u=findUserByEmail(email);
-  if(!u || u.password!==pass){ errEl.textContent="E-mail ou senha inválidos."; errEl.classList.remove('hidden'); return; }
-  if(u.status!=='active'){
-    errEl.textContent = u.role==='barbeiro' ? "Sua conta ainda aguarda aprovação do dono." : "Verifique seu e-mail antes de entrar.";
-    errEl.classList.remove('hidden'); return;
+  const fail = (m)=>{ errEl.textContent=m; errEl.classList.remove('hidden'); };
+  errEl.classList.add('hidden');
+  let u=findUserByEmail(email);
+  if(sbReady()){
+    const btn=document.getElementById('btnLogin'); btn.disabled=true; btn.textContent="Entrando…";
+    try{
+      await sbSignIn(email, pass);
+    }catch(err){
+      btn.disabled=false; btn.textContent="Entrar";
+      return fail(translateAuthError(err.message));
+    }
+    btn.disabled=false; btn.textContent="Entrar";
+    if(!u){
+      u = {id:uid(), name:email.split('@')[0], email, password:"", role:'cliente', status:'active', whatsapp:"", instagram:"", createdAt:Date.now()};
+      DB.users.push(u);
+    }
+    // E-mail confirmado pelo backend → conta passa a existir de fato
+    if(u.role!=='barbeiro' && u.status!=='active'){ u.status='active'; }
+    if(u.role==='barbeiro' && u.status!=='active'){
+      saveDB();
+      return fail("Sua conta ainda aguarda aprovação do dono.");
+    }
+    saveDB();
+  } else {
+    if(!u || u.password!==pass) return fail("E-mail ou senha inválidos.");
+    if(u.status!=='active') return fail(u.role==='barbeiro' ? "Sua conta ainda aguarda aprovação do dono." : "Verifique seu e-mail antes de entrar.");
   }
   state.user=u; state.route='app'; render();
 }
@@ -143,27 +204,56 @@ function renderForgot(){
   <div class="auth-wrap"><div class="auth-card">
     <div class="brand"><div class="brand-mark">💈</div><div class="brand-name">Naveiro</div></div>
     <p class="eyebrow">Recuperar senha</p>
-    <div class="notice">Informe seu e-mail. Vamos simular o envio de um link de redefinição de senha.</div>
+    <div class="notice">Informe seu e-mail cadastrado. Enviaremos um link real para você criar e confirmar uma nova senha.</div>
     <div class="field"><label>E-mail cadastrado</label><input id="fEmail" type="email"></div>
     <div id="fArea"></div>
     <button class="btn btn-primary" id="btnSend">Enviar link de redefinição</button>
     <div class="link-row"><button id="backLogin">← Voltar para login</button><span></span></div>
   </div></div>`);
   document.getElementById('backLogin').onclick=()=>{state.route='login';render();};
-  document.getElementById('btnSend').onclick=()=>{
+  document.getElementById('btnSend').onclick=async ()=>{
     const email=document.getElementById('fEmail').value.trim();
-    const u=findUserByEmail(email);
     const area=document.getElementById('fArea');
-    if(!u){ area.innerHTML=`<div class="notice warn">Não encontramos uma conta com esse e-mail.</div>`; return; }
-    area.innerHTML=`
-      <div class="notice">📧 E-mail de recuperação "enviado" para <b>${email}</b>. (Simulação — clique abaixo para representar o link do e-mail.)</div>
-      <div class="field"><label>Nova senha</label><input id="newPass" type="password"></div>
-      <button class="btn btn-ghost" id="btnReset">Confirmar nova senha</button>`;
-    document.getElementById('btnReset').onclick=()=>{
-      const np=document.getElementById('newPass').value;
-      if(!np || np.length<4){ toast("Senha muito curta."); return; }
-      u.password=np; saveDB(); toast("Senha redefinida! Faça login."); state.route='login'; render();
-    };
+    if(!email){ area.innerHTML=`<div class="notice warn">Informe seu e-mail.</div>`; return; }
+    const btn=document.getElementById('btnSend'); btn.disabled=true; btn.textContent="Enviando…";
+    try{
+      if(!sbReady()) throw new Error("Serviço de e-mail indisponível.");
+      await sbRecover(email);
+      area.innerHTML=`<div class="notice">📧 Enviamos um e-mail para <b>${email}</b> com o link para criar e confirmar uma nova senha. Confira também a caixa de spam.</div>`;
+    }catch(err){
+      area.innerHTML=`<div class="notice warn">${translateAuthError(err.message)}</div>`;
+    }
+    btn.disabled=false; btn.textContent="Enviar link de redefinição";
+  };
+}
+
+/* ---------------- NOVA SENHA (link do e-mail) ---------------- */
+function renderResetPassword(){
+  shell(`
+  <div class="stripe"></div>
+  <div class="auth-wrap"><div class="auth-card">
+    <div class="brand"><div class="brand-mark">💈</div><div class="brand-name">Naveiro</div></div>
+    <p class="eyebrow">Criar nova senha</p>
+    <div id="rsErr" class="err hidden"></div>
+    <div class="field"><label>Nova senha</label><input id="rsPass" type="password"></div>
+    <div class="field"><label>Confirmar nova senha</label><input id="rsPass2" type="password"></div>
+    <button class="btn btn-primary" id="rsSave">Salvar nova senha</button>
+    <div class="link-row"><button id="backLogin">← Voltar para login</button><span></span></div>
+  </div></div>`);
+  document.getElementById('backLogin').onclick=()=>{state.route='login';render();};
+  document.getElementById('rsSave').onclick=async ()=>{
+    const p1=document.getElementById('rsPass').value, p2=document.getElementById('rsPass2').value;
+    const errEl=document.getElementById('rsErr'); errEl.classList.add('hidden');
+    const fail=(m)=>{ errEl.textContent=m; errEl.classList.remove('hidden'); };
+    if(p1.length<6) return fail("A senha deve ter pelo menos 6 caracteres.");
+    if(p1!==p2) return fail("As senhas não conferem.");
+    try{
+      const data = await sbUpdatePassword(state.tmp.recoveryToken, p1);
+      const local = data && data.email ? findUserByEmail(data.email) : null;
+      if(local){ local.status = local.role==='barbeiro' ? local.status : 'active'; saveDB(); }
+      toast("Senha alterada! Faça login.");
+      state.tmp.recoveryToken=null; state.route='login'; render();
+    }catch(err){ fail(translateAuthError(err.message)); }
   };
 }
 
@@ -196,7 +286,7 @@ function renderSignup(){
     b.onclick=()=>{ if(b.disabled) return; state.tmp.role=b.dataset.role; render(); };
   });
   document.getElementById('backLogin').onclick=()=>{state.route='login';render();};
-  document.getElementById('btnCreate').onclick=()=>{
+  document.getElementById('btnCreate').onclick=async ()=>{
     const name=document.getElementById('suName').value.trim();
     const email=document.getElementById('suEmail').value.trim();
     const pass=document.getElementById('suPass').value;
@@ -205,32 +295,45 @@ function renderSignup(){
     if(findUserByEmail(email)){ errEl.textContent="Já existe uma conta com esse e-mail."; errEl.classList.remove('hidden'); return; }
     const role = state.tmp.role;
     if(role==='dono' && ownerExists()){ errEl.textContent="Já existe um Dono cadastrado."; errEl.classList.remove('hidden'); return; }
+    if(pass.length<6){ errEl.textContent="A senha deve ter pelo menos 6 caracteres."; errEl.classList.remove('hidden'); return; }
+    const btn=document.getElementById('btnCreate');
+    if(sbReady()){
+      btn.disabled=true; btn.textContent="Criando…";
+      try{ await sbSignUp(email, pass); }
+      catch(err){
+        btn.disabled=false; btn.textContent="Criar conta";
+        errEl.textContent=translateAuthError(err.message); errEl.classList.remove('hidden'); return;
+      }
+      btn.disabled=false; btn.textContent="Criar conta";
+    }
     const u = {id:uid(), name, email, password:pass, role,
-      status: role==='dono' ? 'active' : 'pending',
+      status: 'pending',
       whatsapp:"", instagram:"", createdAt:Date.now()};
     DB.users.push(u);
     if(role==='barbeiro'){ DB.pendingBarberApprovals.push(u.id); }
     saveDB();
     state.tmp.pendingUser = u.id;
-    if(role==='dono'){ toast("Conta de Dono criada com sucesso!"); state.route='login'; render(); }
-    else if(role==='cliente'){ state.route='verifyClient'; render(); }
-    else { state.route='verifyBarberPending'; render(); }
+    if(role==='barbeiro'){ state.route='verifyBarberPending'; }
+    else { state.route='verifyClient'; }
+    render();
   };
 }
 
 function renderVerifyClient(){
   const u = DB.users.find(x=>x.id===state.tmp.pendingUser);
+  const simulate = !sbReady();
   shell(`
   <div class="stripe"></div>
   <div class="auth-wrap"><div class="auth-card">
     <div class="brand"><div class="brand-mark">💈</div><div class="brand-name">Naveiro</div></div>
     <h2 style="margin-bottom:10px;">Verifique seu e-mail</h2>
-    <div class="notice">📧 Enviamos um e-mail de verificação para <b>${u?u.email:''}</b>. Sua conta só existe de fato depois de confirmar. (Simulação: clique no botão abaixo para representar o clique no link do e-mail.)</div>
-    <button class="btn btn-primary" id="btnVerify">Simular clique no link de verificação</button>
+    <div class="notice">📧 Enviamos um e-mail de verificação para <b>${u?u.email:''}</b>. Sua conta só existe de fato depois que você clicar no link de confirmação. Confira também a caixa de spam.</div>
+    ${simulate?'<button class="btn btn-primary" id="btnVerify">Simular clique no link de verificação</button>':''}
     <div class="link-row"><button id="backLogin">← Voltar para login</button><span></span></div>
   </div></div>`);
   document.getElementById('backLogin').onclick=()=>{state.route='login';render();};
-  document.getElementById('btnVerify').onclick=()=>{
+  const bv=document.getElementById('btnVerify');
+  if(bv) bv.onclick=()=>{
     if(u){ u.status='active'; saveDB(); }
     toast("E-mail verificado! Conta ativa.");
     state.route='login'; render();
@@ -244,7 +347,7 @@ function renderVerifyBarberPending(){
   <div class="auth-wrap"><div class="auth-card">
     <div class="brand"><div class="brand-mark">💈</div><div class="brand-name">Naveiro</div></div>
     <h2 style="margin-bottom:10px;">Aguardando aprovação</h2>
-    <div class="notice">Enviamos uma notificação de aprovação para o e-mail do <b>Dono</b>. Sua conta de barbeiro (${u?u.email:''}) será ativada assim que ele aprovar dentro do app, na aba Dono → Equipe.</div>
+    <div class="notice">📧 Enviamos um e-mail de verificação para <b>${u?u.email:''}</b> — confirme-o primeiro. Depois disso, sua conta de barbeiro será ativada quando o <b>Dono</b> aprovar na aba Dono → Equipe.</div>
     <button class="btn btn-ghost" id="backLogin">← Voltar para login</button>
   </div></div>`);
   document.getElementById('backLogin').onclick=()=>{state.route='login';render();};
@@ -873,7 +976,7 @@ function openCommissionModal(barberId){
 
 /* --- Financeiro --- */
 function renderDonoFinanceiro(body){
-  const fsubs=[{k:'visao',l:'Visão geral'},{k:'lancamentos',l:'Lançamentos'},{k:'categorias',l:'Categorias'},{k:'pagamento',l:'Formas de pgto'},{k:'caixa',l:'Fluxo de caixa'}];
+  const fsubs=[{k:'visao',l:'Visão geral'},{k:'lancamentos',l:'Lançamentos'},{k:'relatorio',l:'Relatório de serviços'},{k:'categorias',l:'Categorias'},{k:'pagamento',l:'Formas de pgto'},{k:'caixa',l:'Fluxo de caixa'}];
   state.tmp.finSub = state.tmp.finSub || 'visao';
   body.innerHTML = `<div class="subnav">${fsubs.map(f=>`<button class="${state.tmp.finSub===f.k?'active':''}" data-f="${f.k}">${f.l}</button>`).join('')}</div>
     <div id="finArea"></div>`;
@@ -881,6 +984,7 @@ function renderDonoFinanceiro(body){
   const area = document.getElementById('finArea');
   if(state.tmp.finSub==='visao') renderFinVisaoGeral(area);
   if(state.tmp.finSub==='lancamentos') renderFinLancamentos(area);
+  if(state.tmp.finSub==='relatorio') renderFinRelatorio(area);
   if(state.tmp.finSub==='categorias') renderFinCategorias(area);
   if(state.tmp.finSub==='pagamento') renderFinPagamento(area);
   if(state.tmp.finSub==='caixa') renderFinCaixa(area);
@@ -907,7 +1011,10 @@ function renderFinVisaoGeral(area){
   const prevAttend=DB.appointments.filter(a=>{const d=new Date(a.date);return a.status==='done'&&d.getMonth()===prev.getMonth()&&d.getFullYear()===prev.getFullYear();}).length;
 
   const months12=[]; for(let i=11;i>=0;i--){ const d=new Date(curY,curM-i,1); months12.push({m:d.getMonth(),y:d.getFullYear(),rev:allRevenueForMonth(d.getMonth(),d.getFullYear())}); }
-  const maxRev = Math.max(1,...months12.map(x=>x.rev));
+  months12.forEach(x=> x.exp = allExpenseForMonth(x.m,x.y));
+  const maxBar = Math.max(1,...months12.map(x=>Math.max(x.rev,x.exp)));
+  const revSlices = revenueBreakdown(curM,curY);
+  const expSlices = expenseBreakdown(curM,curY);
 
   area.innerHTML = `
     <div class="grid g4">
@@ -919,13 +1026,135 @@ function renderFinVisaoGeral(area){
         <div class="delta ${curAttend>=prevAttend?'up':'down'}">${pct(curAttend,prevAttend)>=0?'+':''}${pct(curAttend,prevAttend)}% vs. anterior</div></div>
       <div class="stat-card"><div class="label">Despesas do mês</div><div class="value">${money(curExp)}</div></div>
     </div>
-    <div class="section-title"><h2>Faturamento — últimos 12 meses</h2></div>
-    <div class="card" style="display:flex;align-items:flex-end;gap:6px;height:180px;padding-top:24px;">
+    <div class="section-title"><h2>Composição do mês</h2></div>
+    <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;">
+      ${pieCardHtml("Receitas do mês", revSlices, curRev)}
+      ${pieCardHtml("Despesas do mês", expSlices, curExp)}
+    </div>
+    <div class="section-title"><h2>Receitas x Despesas — últimos 12 meses</h2></div>
+    <div class="card">
+      <div style="display:flex;gap:16px;margin-bottom:12px;font-size:12px;color:var(--text-dim);">
+        <span><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--green);margin-right:6px;"></i>Receita</span>
+        <span><i style="display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--red);margin-right:6px;"></i>Despesa</span>
+      </div>
+      <div style="display:flex;align-items:flex-end;gap:8px;height:180px;">
       ${months12.map(x=>`<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;">
-        <div style="width:100%;background:linear-gradient(180deg,var(--brass-glow),var(--brass));border-radius:4px 4px 0 0;height:${Math.max(4,(x.rev/maxRev)*120)}px;" title="${money(x.rev)}"></div>
+        <div style="display:flex;align-items:flex-end;gap:2px;width:100%;height:130px;">
+          <div style="flex:1;background:var(--green);border-radius:3px 3px 0 0;height:${Math.max(3,(x.rev/maxBar)*130)}px;" title="Receita ${monthName(x.m)}: ${money(x.rev)}"></div>
+          <div style="flex:1;background:var(--red);border-radius:3px 3px 0 0;height:${Math.max(3,(x.exp/maxBar)*130)}px;" title="Despesa ${monthName(x.m)}: ${money(x.exp)}"></div>
+        </div>
         <span style="font-size:10px;color:var(--text-faint);">${monthName(x.m)}</span>
       </div>`).join('')}
+      </div>
     </div>`;
+}
+
+const PIE_COLORS = ["#c9a227","#e0b83a","#4caf7d","#3f8cff","#b45cd6","#ff8a3d","#e05252","#7a8b99","#2fb0a5","#d4d4d4"];
+function revenueBreakdown(m,y){
+  const map={};
+  DB.appointments.filter(a=>{ const d=new Date(a.date); return a.status==='done' && d.getMonth()===m && d.getFullYear()===y; })
+    .forEach(a=>{ const sv=DB.services.find(x=>x.id===a.serviceId); const name = sv? sv.name : 'Serviços';
+      map[name]=(map[name]||0)+(sv?sv.price:0); });
+  DB.financeEntries.filter(e=>{ const d=new Date(e.date); return e.type==='receita' && d.getMonth()===m && d.getFullYear()===y; })
+    .forEach(e=>{ const c=DB.categories.find(c=>c.id===e.categoryId); const name=c?c.name:'Outras receitas';
+      map[name]=(map[name]||0)+Number(e.amount); });
+  return Object.entries(map).map(([label,value])=>({label,value})).sort((a,b)=>b.value-a.value);
+}
+function expenseBreakdown(m,y){
+  const map={};
+  DB.financeEntries.filter(e=>{ const d=new Date(e.date); return e.type==='despesa' && d.getMonth()===m && d.getFullYear()===y; })
+    .forEach(e=>{ const c=DB.categories.find(c=>c.id===e.categoryId); const name=c?c.name:'Outras despesas';
+      map[name]=(map[name]||0)+Number(e.amount); });
+  return Object.entries(map).map(([label,value])=>({label,value})).sort((a,b)=>b.value-a.value);
+}
+function pieCardHtml(title, slices, total){
+  if(!total || slices.length===0){
+    return `<div class="card"><div style="font-size:13px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.6px;margin-bottom:10px;">${title}</div>
+      <div class="empty">Sem dados neste mês.</div></div>`;
+  }
+  let acc=0;
+  const stops = slices.map((s,i)=>{
+    const start=(acc/total)*100; acc+=s.value; const end=(acc/total)*100;
+    return `${PIE_COLORS[i%PIE_COLORS.length]} ${start}% ${end}%`;
+  }).join(',');
+  return `<div class="card">
+    <div style="font-size:13px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.6px;margin-bottom:10px;">${title}</div>
+    <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;">
+      <div style="width:150px;height:150px;border-radius:50%;background:conic-gradient(${stops});flex:none;"></div>
+      <div style="flex:1;min-width:140px;">
+        ${slices.map((s,i)=>`<div style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:6px;">
+          <i style="width:10px;height:10px;border-radius:2px;background:${PIE_COLORS[i%PIE_COLORS.length]};flex:none;"></i>
+          <span style="flex:1;">${s.label}</span>
+          <span style="font-family:var(--font-mono);">${money(s.value)} · ${Math.round((s.value/total)*100)}%</span>
+        </div>`).join('')}
+        <div style="border-top:1px solid var(--line);margin-top:8px;padding-top:8px;font-size:12px;display:flex;justify-content:space-between;">
+          <b>Total</b><b style="font-family:var(--font-mono);">${money(total)}</b></div>
+      </div>
+    </div>
+  </div>`;
+}
+
+/* --- Relatório de serviços prestados --- */
+function renderFinRelatorio(area){
+  const t = state.tmp;
+  if(!t.repFrom){ const d=new Date(); t.repFrom = new Date(d.getFullYear(),d.getMonth(),1).toISOString().slice(0,10); }
+  if(!t.repTo) t.repTo = todayISO();
+  if(!t.repMode) t.repMode = 'periodo';
+  const from=t.repFrom, to=t.repTo;
+  const done = DB.appointments.filter(a=>a.status==='done' && a.date>=from && a.date<=to);
+  const svcName = id => { const s=DB.services.find(x=>x.id===id); return s? s.name : 'Serviço removido'; };
+  const svcPrice = id => { const s=DB.services.find(x=>x.id===id); return s? s.price : 0; };
+
+  const byService={};
+  done.forEach(a=>{ const k=a.serviceId; byService[k]=byService[k]||{qty:0,total:0}; byService[k].qty++; byService[k].total+=svcPrice(a.serviceId); });
+  const totQty=done.length, totVal=Object.values(byService).reduce((s,x)=>s+x.total,0);
+
+  const byDay={};
+  done.forEach(a=>{ byDay[a.date]=byDay[a.date]||{}; const d=byDay[a.date];
+    d[a.serviceId]=d[a.serviceId]||{qty:0,total:0}; d[a.serviceId].qty++; d[a.serviceId].total+=svcPrice(a.serviceId); });
+
+  area.innerHTML = `
+    <div class="section-title"><h2>Relatório de serviços prestados</h2></div>
+    <div class="card" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px;">
+      <div class="field" style="margin:0;"><label>De</label><input id="repFrom" type="date" value="${from}"></div>
+      <div class="field" style="margin:0;"><label>Até</label><input id="repTo" type="date" value="${to}"></div>
+      <div class="field" style="margin:0;"><label>Agrupar</label>
+        <select id="repMode">
+          <option value="periodo" ${t.repMode==='periodo'?'selected':''}>Por período (total)</option>
+          <option value="dia" ${t.repMode==='dia'?'selected':''}>Por dia</option>
+        </select></div>
+      <button class="btn-sm brass" id="repGo">Gerar</button>
+    </div>
+    <div class="grid g4" style="margin-bottom:12px;">
+      <div class="stat-card"><div class="label">Serviços prestados</div><div class="value">${totQty}</div></div>
+      <div class="stat-card"><div class="label">Valor total</div><div class="value">${money(totVal)}</div></div>
+      <div class="stat-card"><div class="label">Ticket médio</div><div class="value">${money(totQty?totVal/totQty:0)}</div></div>
+    </div>
+    ${totQty===0 ? `<div class="empty">Nenhum serviço prestado nesse período.</div>` :
+      (t.repMode==='periodo'
+        ? `<table><thead><tr><th>Serviço</th><th>Quantidade</th><th>Valor total</th></tr></thead><tbody>
+            ${Object.entries(byService).sort((a,b)=>b[1].total-a[1].total).map(([id,v])=>
+              `<tr><td>${svcName(id)}</td><td>${v.qty}</td><td>${money(v.total)}</td></tr>`).join('')}
+            <tr><td><b>Total</b></td><td><b>${totQty}</b></td><td><b>${money(totVal)}</b></td></tr>
+          </tbody></table>`
+        : Object.keys(byDay).sort().reverse().map(day=>{
+            const rows=Object.entries(byDay[day]);
+            const dq=rows.reduce((s,[,v])=>s+v.qty,0), dv=rows.reduce((s,[,v])=>s+v.total,0);
+            return `<div class="card" style="margin-bottom:12px;">
+              <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
+                <b>${formatDatePt(day)}</b>
+                <span style="font-family:var(--font-mono);color:var(--brass-glow);">${dq} serviço(s) · ${money(dv)}</span></div>
+              <table><thead><tr><th>Serviço</th><th>Quantidade</th><th>Valor</th></tr></thead><tbody>
+                ${rows.sort((a,b)=>b[1].total-a[1].total).map(([id,v])=>`<tr><td>${svcName(id)}</td><td>${v.qty}</td><td>${money(v.total)}</td></tr>`).join('')}
+              </tbody></table></div>`;
+          }).join(''))}`;
+
+  area.querySelector('#repGo').onclick=()=>{
+    t.repFrom=area.querySelector('#repFrom').value||from;
+    t.repTo=area.querySelector('#repTo').value||to;
+    t.repMode=area.querySelector('#repMode').value;
+    renderFinRelatorio(area);
+  };
 }
 function renderFinLancamentos(area){
   area.innerHTML = `
@@ -986,14 +1215,25 @@ function openCatModal(id){
 function renderFinPagamento(area){
   area.innerHTML = `<div class="section-title"><h2>Formas de pagamento</h2><button class="btn-sm brass" id="addPm">+ Nova forma</button></div>
     ${DB.paymentMethods.map(p=>`<div class="list-row"><div class="main"><div class="name">${p.name}</div></div>
-      <button class="btn-sm red" data-delpm="${p.id}">Excluir</button></div>`).join('')}`;
-  document.getElementById('addPm').onclick=()=>{
-    const name=prompt("Nome da forma de pagamento:"); if(!name) return;
-    DB.paymentMethods.push({id:uid(), name}); saveDB(); renderFinPagamento(area);
-  };
+      <div class="row-actions"><button class="btn-sm" data-editpm="${p.id}">Editar</button><button class="btn-sm red" data-delpm="${p.id}">Excluir</button></div></div>`).join('')
+      || `<div class="empty">Nenhuma forma de pagamento cadastrada.</div>`}`;
+  document.getElementById('addPm').onclick=()=> openPmModal(null, area);
+  document.querySelectorAll('[data-editpm]').forEach(el=> el.onclick=()=> openPmModal(el.dataset.editpm, area));
   document.querySelectorAll('[data-delpm]').forEach(el=> el.onclick=()=>{
     DB.paymentMethods = DB.paymentMethods.filter(p=>p.id!==el.dataset.delpm); saveDB(); renderFinPagamento(area);
   });
+}
+function openPmModal(id, area){
+  const p = id ? DB.paymentMethods.find(x=>x.id===id) : null;
+  openModal(`<h3>${p?'Editar':'Nova'} forma de pagamento</h3>
+    <div class="field"><label>Nome</label><input id="pmName" value="${p?p.name:''}" placeholder="Ex: Pix"></div>
+    <button class="btn btn-primary" id="pmSave">Salvar</button>`);
+  document.getElementById('pmSave').onclick=()=>{
+    const name=document.getElementById('pmName').value.trim();
+    if(!name){ toast("Informe o nome."); return; }
+    if(p) p.name=name; else DB.paymentMethods.push({id:uid(), name});
+    saveDB(); closeModal(); toast("Forma de pagamento salva."); renderFinPagamento(area);
+  };
 }
 function renderFinCaixa(area){
   const byMethod={};
@@ -1081,5 +1321,18 @@ document.addEventListener('click', (e)=>{
 (async function boot(){
   document.getElementById('root').innerHTML = `<div class="auth-wrap"><div style="color:var(--text-faint);">Carregando…</div></div>`;
   await loadDB();
+  // Links vindos do e-mail (confirmação de cadastro / redefinição de senha)
+  const hash = new URLSearchParams((window.location.hash||'').replace(/^#/,''));
+  const token = hash.get('access_token'); const type = hash.get('type');
+  if(token){
+    history.replaceState(null,'',window.location.pathname);
+    if(type==='recovery'){ state.tmp.recoveryToken=token; state.route='reset'; render(); return; }
+    try{
+      const me = await sbCall('/user', {method:'GET', token});
+      const local = me && me.email ? findUserByEmail(me.email) : null;
+      if(local && local.role!=='barbeiro' && local.status!=='active'){ local.status='active'; saveDB(); }
+      toast("E-mail confirmado! Sua conta está ativa.");
+    }catch(e){ /* link expirado */ }
+  }
   render();
 })();
