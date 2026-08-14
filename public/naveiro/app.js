@@ -18,6 +18,17 @@ if(!window.storage){
 }
 
 /* ---- Backend de autenticação (e-mails reais) ---- */
+const SESSION_KEY = "naveiro_session_v1";
+let SESSION = null; // {access_token, refresh_token, email}
+function loadSession(){
+  try{ SESSION = JSON.parse(localStorage.getItem(SESSION_KEY)||"null"); }catch(e){ SESSION=null; }
+  return SESSION;
+}
+function saveSession(s){
+  SESSION = s;
+  if(s) localStorage.setItem(SESSION_KEY, JSON.stringify(s));
+  else localStorage.removeItem(SESSION_KEY);
+}
 const SB = window.__SB || {url:"", key:""};
 const sbReady = () => Boolean(SB.url && SB.key);
 async function sbCall(path, {method="POST", body=null, token=null}={}){
