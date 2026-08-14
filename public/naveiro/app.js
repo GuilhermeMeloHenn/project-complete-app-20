@@ -1393,10 +1393,24 @@ document.addEventListener('click', (e)=>{
     if(type==='recovery'){ state.tmp.recoveryToken=token; state.route='reset'; render(); return; }
     try{
       const me = await sbCall('/user', {method:'GET', token});
+      saveSession({access_token:token, refresh_token:hash.get('refresh_token'), email: me && me.email});
+      await syncFromCloud();
       const local = me && me.email ? findUserByEmail(me.email) : null;
       if(local && local.role!=='barbeiro' && local.status!=='active'){ local.status='active'; saveDB(); }
       toast("E-mail confirmado! Sua conta está ativa.");
     }catch(e){ /* link expirado */ }
+    render(); return;
+  }
+  // Sessão salva → entra automaticamente em qualquer dispositivo/navegador
+  loadSession();
+  if(SESSION && SESSION.refresh_token && sbReady()){
+    try{
+      const s = await sbRefresh(SESSION.refresh_token);
+      saveSession({access_token:s.access_token, refresh_token:s.refresh_token, email:(s.user&&s.user.email)||SESSION.email});
+      await syncFromCloud();
+      const u = SESSION.email ? findUserByEmail(SESSION.email) : null;
+      if(u && (u.status==='active')){ state.user=u; state.route='app'; }
+    }catch(e){ saveSession(null); }
   }
   render();
 })();
