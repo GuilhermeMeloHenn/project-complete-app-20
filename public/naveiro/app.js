@@ -48,6 +48,33 @@ const sbSignIn = (email,password) => sbCall(`/token?grant_type=password`, {body:
 const sbRecover = (email) =>
   sbCall(`/recover?redirect_to=${encodeURIComponent(window.location.origin + "/")}`, {body:{email}});
 const sbUpdatePassword = (token,password) => sbCall(`/user`, {method:"PUT", token, body:{password}});
+const sbRefresh = (refresh_token) => sbCall(`/token?grant_type=refresh_token`, {body:{refresh_token}});
+
+/* ---- Banco de dados na nuvem (compartilhado entre dispositivos) ---- */
+const CLOUD_ROW_ID = "naveiro";
+async function cloudFetch(path, {method="GET", body=null, headers={}}={}){
+  const token = SESSION && SESSION.access_token;
+  const res = await fetch(`${SB.url}/rest/v1${path}`, {
+    method,
+    headers: { "Content-Type":"application/json", apikey: SB.key, Authorization:`Bearer ${token}`, ...headers },
+    body: body?JSON.stringify(body):undefined,
+  });
+  if(!res.ok) throw new Error(await res.text());
+  const text = await res.text();
+  return text? JSON.parse(text) : null;
+}
+async function cloudLoad(){
+  const rows = await cloudFetch(`/app_state?id=eq.${CLOUD_ROW_ID}&select=data`);
+  return rows && rows[0] ? rows[0].data : null;
+}
+async function cloudSave(data){
+  await cloudFetch(`/app_state?on_conflict=id`, {
+    method:"POST",
+    body:{ id: CLOUD_ROW_ID, data },
+    headers:{ Prefer:"resolution=merge-duplicates,return=minimal" },
+  });
+}
+const cloudReady = () => Boolean(sbReady() && SESSION && SESSION.access_token);
 
 function translateAuthError(msg){
   const m=(msg||"").toLowerCase();
