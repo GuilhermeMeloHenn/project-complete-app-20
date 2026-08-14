@@ -749,8 +749,9 @@ function barberStatsFor(barberId, dateISO){
     todayAppts: DB.appointments.filter(a=>a.barberId===barberId && a.date===day).length};
 }
 
-function renderBarbDash(body){
-  const st = barberStatsFor(state.user.id, todayISO());
+function renderBarbDash(body, barberId){
+  const bid = barberId || state.user.id;
+  const st = barberStatsFor(bid, todayISO());
   body.innerHTML = `
     <div class="grid g4">
       <div class="stat-card"><div class="label">Agendados hoje</div><div class="value">${st.todayAppts}</div></div>
@@ -766,8 +767,8 @@ function renderBarbDash(body){
       <div class="card"><h3 style="margin-bottom:12px;">Top 5 serviços realizados</h3><div id="topSvcsBarber"></div></div>
     </div>
   `;
-  document.getElementById('revClick').onclick=()=> openMonthRevenueModal(state.user.id);
-  const doneAppts = DB.appointments.filter(a=>a.barberId===state.user.id && a.status==='done');
+  document.getElementById('revClick').onclick=()=> openMonthRevenueModal(bid);
+  const doneAppts = DB.appointments.filter(a=>a.barberId===bid && a.status==='done');
   const clientCounts={};
   doneAppts.forEach(a=>{ clientCounts[a.clientId]=(clientCounts[a.clientId]||0)+1; });
   const topClients = Object.entries(clientCounts).sort((a,b)=>b[1]-a[1]).slice(0,5);
