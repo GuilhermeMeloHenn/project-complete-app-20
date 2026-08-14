@@ -363,7 +363,7 @@ function renderSignup(){
     const btn=document.getElementById('btnCreate');
     if(sbReady()){
       btn.disabled=true; btn.textContent="Criando…";
-      try{ await sbSignUp(email, pass); }
+      try{ await sbSignUp(email, pass, {name, role}); }
       catch(err){
         btn.disabled=false; btn.textContent="Criar conta";
         errEl.textContent=translateAuthError(err.message); errEl.classList.remove('hidden'); return;
