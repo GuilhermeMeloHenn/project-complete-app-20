@@ -125,11 +125,28 @@ async function loadDB(){
   }catch(e){ DB = defaultDB(); }
   if(!DB.pendingBarberApprovals) DB.pendingBarberApprovals=[];
 }
+
+/* Carrega o banco da nuvem (fonte da verdade quando há sessão) */
+async function syncFromCloud(){
+  if(!cloudReady()) return false;
+  try{
+    const remote = await cloudLoad();
+    if(remote && remote.users){
+      DB = remote;
+      if(!DB.pendingBarberApprovals) DB.pendingBarberApprovals=[];
+      try{ await window.storage.set(DB_KEY, JSON.stringify(DB), true); }catch(e){}
+    } else {
+      await cloudSave(DB); // primeira sincronização: envia o que existe localmente
+    }
+    return true;
+  }catch(e){ console.error("cloud sync", e); return false; }
+}
 let saveTimer=null;
 function saveDB(){
   clearTimeout(saveTimer);
   saveTimer = setTimeout(async ()=>{
     try{ await window.storage.set(DB_KEY, JSON.stringify(DB), true); }catch(e){ console.error("storage error",e); }
+    if(cloudReady()){ try{ await cloudSave(DB); }catch(e){ console.error("cloud save", e); } }
   }, 150);
 }
 
