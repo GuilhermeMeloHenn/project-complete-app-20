@@ -18,6 +18,17 @@ if(!window.storage){
 }
 
 /* ---- Backend de autenticação (e-mails reais) ---- */
+const SESSION_KEY = "naveiro_session_v1";
+let SESSION = null; // {access_token, refresh_token, email}
+function loadSession(){
+  try{ SESSION = JSON.parse(localStorage.getItem(SESSION_KEY)||"null"); }catch(e){ SESSION=null; }
+  return SESSION;
+}
+function saveSession(s){
+  SESSION = s;
+  if(s) localStorage.setItem(SESSION_KEY, JSON.stringify(s));
+  else localStorage.removeItem(SESSION_KEY);
+}
 const SB = window.__SB || {url:"", key:""};
 const sbReady = () => Boolean(SB.url && SB.key);
 async function sbCall(path, {method="POST", body=null, token=null}={}){
@@ -31,12 +42,39 @@ async function sbCall(path, {method="POST", body=null, token=null}={}){
   }
   return data;
 }
-const sbSignUp = (email,password) =>
-  sbCall(`/signup?redirect_to=${encodeURIComponent(window.location.origin + "/")}`, {body:{email,password}});
+const sbSignUp = (email,password,meta) =>
+  sbCall(`/signup?redirect_to=${encodeURIComponent(window.location.origin + "/")}`, {body:{email,password,data:meta||{}}});
 const sbSignIn = (email,password) => sbCall(`/token?grant_type=password`, {body:{email,password}});
 const sbRecover = (email) =>
   sbCall(`/recover?redirect_to=${encodeURIComponent(window.location.origin + "/")}`, {body:{email}});
 const sbUpdatePassword = (token,password) => sbCall(`/user`, {method:"PUT", token, body:{password}});
+const sbRefresh = (refresh_token) => sbCall(`/token?grant_type=refresh_token`, {body:{refresh_token}});
+
+/* ---- Banco de dados na nuvem (compartilhado entre dispositivos) ---- */
+const CLOUD_ROW_ID = "naveiro";
+async function cloudFetch(path, {method="GET", body=null, headers={}}={}){
+  const token = SESSION && SESSION.access_token;
+  const res = await fetch(`${SB.url}/rest/v1${path}`, {
+    method,
+    headers: { "Content-Type":"application/json", apikey: SB.key, Authorization:`Bearer ${token}`, ...headers },
+    body: body?JSON.stringify(body):undefined,
+  });
+  if(!res.ok) throw new Error(await res.text());
+  const text = await res.text();
+  return text? JSON.parse(text) : null;
+}
+async function cloudLoad(){
+  const rows = await cloudFetch(`/app_state?id=eq.${CLOUD_ROW_ID}&select=data`);
+  return rows && rows[0] ? rows[0].data : null;
+}
+async function cloudSave(data){
+  await cloudFetch(`/app_state?on_conflict=id`, {
+    method:"POST",
+    body:{ id: CLOUD_ROW_ID, data },
+    headers:{ Prefer:"resolution=merge-duplicates,return=minimal" },
+  });
+}
+const cloudReady = () => Boolean(sbReady() && SESSION && SESSION.access_token);
 
 function translateAuthError(msg){
   const m=(msg||"").toLowerCase();
@@ -87,11 +125,28 @@ async function loadDB(){
   }catch(e){ DB = defaultDB(); }
   if(!DB.pendingBarberApprovals) DB.pendingBarberApprovals=[];
 }
+
+/* Carrega o banco da nuvem (fonte da verdade quando há sessão) */
+async function syncFromCloud(){
+  if(!cloudReady()) return false;
+  try{
+    const remote = await cloudLoad();
+    if(remote && remote.users){
+      DB = remote;
+      if(!DB.pendingBarberApprovals) DB.pendingBarberApprovals=[];
+      try{ await window.storage.set(DB_KEY, JSON.stringify(DB), true); }catch(e){}
+    } else {
+      await cloudSave(DB); // primeira sincronização: envia o que existe localmente
+    }
+    return true;
+  }catch(e){ console.error("cloud sync", e); return false; }
+}
 let saveTimer=null;
 function saveDB(){
   clearTimeout(saveTimer);
   saveTimer = setTimeout(async ()=>{
     try{ await window.storage.set(DB_KEY, JSON.stringify(DB), true); }catch(e){ console.error("storage error",e); }
+    if(cloudReady()){ try{ await cloudSave(DB); }catch(e){ console.error("cloud save", e); } }
   }, 150);
 }
 
@@ -159,16 +214,25 @@ async function doLogin(){
   let u=findUserByEmail(email);
   if(sbReady()){
     const btn=document.getElementById('btnLogin'); btn.disabled=true; btn.textContent="Entrando…";
+    let sess=null;
     try{
-      await sbSignIn(email, pass);
+      sess = await sbSignIn(email, pass);
     }catch(err){
       btn.disabled=false; btn.textContent="Entrar";
       return fail(translateAuthError(err.message));
     }
+    saveSession({access_token:sess.access_token, refresh_token:sess.refresh_token, email});
+    btn.textContent="Carregando seus dados…";
+    await syncFromCloud();
     btn.disabled=false; btn.textContent="Entrar";
+    u = findUserByEmail(email);
+    const meta = (sess.user && sess.user.user_metadata) || {};
     if(!u){
-      u = {id:uid(), name:email.split('@')[0], email, password:"", role:'cliente', status:'active', whatsapp:"", instagram:"", createdAt:Date.now()};
+      const role = meta.role || 'cliente';
+      u = {id:uid(), name: meta.name || email.split('@')[0], email, password:"", role,
+        status: role==='barbeiro' ? 'pending' : 'active', whatsapp:"", instagram:"", createdAt:Date.now()};
       DB.users.push(u);
+      if(role==='barbeiro' && !DB.pendingBarberApprovals.includes(u.id)) DB.pendingBarberApprovals.push(u.id);
     }
     // E-mail confirmado pelo backend → conta passa a existir de fato
     if(u.role!=='barbeiro' && u.status!=='active'){ u.status='active'; }
@@ -299,7 +363,7 @@ function renderSignup(){
     const btn=document.getElementById('btnCreate');
     if(sbReady()){
       btn.disabled=true; btn.textContent="Criando…";
-      try{ await sbSignUp(email, pass); }
+      try{ await sbSignUp(email, pass, {name, role}); }
       catch(err){
         btn.disabled=false; btn.textContent="Criar conta";
         errEl.textContent=translateAuthError(err.message); errEl.classList.remove('hidden'); return;
@@ -354,7 +418,7 @@ function renderVerifyBarberPending(){
 }
 
 /* ============================== APP SHELL ============================== */
-function logout(){ state.user=null; state.route='login'; render(); }
+function logout(){ saveSession(null); state.user=null; state.route='login'; render(); }
 
 function renderApp(){
   const u = state.user;
@@ -685,8 +749,9 @@ function barberStatsFor(barberId, dateISO){
     todayAppts: DB.appointments.filter(a=>a.barberId===barberId && a.date===day).length};
 }
 
-function renderBarbDash(body){
-  const st = barberStatsFor(state.user.id, todayISO());
+function renderBarbDash(body, barberId){
+  const bid = barberId || state.user.id;
+  const st = barberStatsFor(bid, todayISO());
   body.innerHTML = `
     <div class="grid g4">
       <div class="stat-card"><div class="label">Agendados hoje</div><div class="value">${st.todayAppts}</div></div>
@@ -702,8 +767,8 @@ function renderBarbDash(body){
       <div class="card"><h3 style="margin-bottom:12px;">Top 5 serviços realizados</h3><div id="topSvcsBarber"></div></div>
     </div>
   `;
-  document.getElementById('revClick').onclick=()=> openMonthRevenueModal(state.user.id);
-  const doneAppts = DB.appointments.filter(a=>a.barberId===state.user.id && a.status==='done');
+  document.getElementById('revClick').onclick=()=> openMonthRevenueModal(bid);
+  const doneAppts = DB.appointments.filter(a=>a.barberId===bid && a.status==='done');
   const clientCounts={};
   doneAppts.forEach(a=>{ clientCounts[a.clientId]=(clientCounts[a.clientId]||0)+1; });
   const topClients = Object.entries(clientCounts).sort((a,b)=>b[1]-a[1]).slice(0,5);
@@ -735,8 +800,9 @@ function openMonthRevenueModal(barberId){
   `);
 }
 
-function renderBarbAgenda(body){
-  const today = DB.appointments.filter(a=>a.barberId===state.user.id && a.date===todayISO())
+function renderBarbAgenda(body, barberId){
+  const bid = barberId || state.user.id;
+  const today = DB.appointments.filter(a=>a.barberId===bid && a.date===todayISO())
     .sort((a,b)=> a.time.localeCompare(b.time));
   if(today.length===0){ body.innerHTML=`<div class="empty"><span class="ic">🗓️</span>Nenhum agendamento para hoje.</div>`; return; }
   body.innerHTML = today.map(a=>{
@@ -760,7 +826,7 @@ function renderBarbAgenda(body){
   });
   document.querySelectorAll('[data-cancel]').forEach(el=> el.onclick=(e)=>{
     const id = e.target.closest('.list-row').dataset.id;
-    const apt = DB.appointments.find(x=>x.id===id); apt.status='cancelled'; saveDB(); toast("Agendamento cancelado."); renderBarbAgenda(body);
+    const apt = DB.appointments.find(x=>x.id===id); apt.status='cancelled'; saveDB(); toast("Agendamento cancelado."); renderBarbAgenda(body, bid);
   });
 }
 function openClientContactModal(clientId){
@@ -814,16 +880,17 @@ function buildAISuggestions(barberId){
   return out.slice(0,6);
 }
 
-function renderBarbComissoes(body){
-  const myComms = DB.commissions.filter(c=>c.barberId===state.user.id);
-  const doneAppts = DB.appointments.filter(a=>a.barberId===state.user.id && a.status==='done');
+function renderBarbComissoes(body, barberId){
+  const bid = barberId || state.user.id;
+  const myComms = DB.commissions.filter(c=>c.barberId===bid);
+  const doneAppts = DB.appointments.filter(a=>a.barberId===bid && a.status==='done');
   const [filter,setFilter] = [state.tmp.commFilter||'mensal', v=>{state.tmp.commFilter=v;}];
   body.innerHTML = `
     <div class="subnav">
       ${['diario','semanal','mensal'].map(f=>`<button class="${filter===f?'active':''}" data-cf="${f}">${f==='diario'?'Diário':f==='semanal'?'Semanal':'Mensal'}</button>`).join('')}
     </div>
     <div id="commArea"></div>`;
-  document.querySelectorAll('[data-cf]').forEach(el=> el.onclick=()=>{ state.tmp.commFilter=el.dataset.cf; renderBarbComissoes(body); });
+  document.querySelectorAll('[data-cf]').forEach(el=> el.onclick=()=>{ state.tmp.commFilter=el.dataset.cf; renderBarbComissoes(body, bid); });
   const now=new Date();
   const inRange = doneAppts.filter(a=>{
     const d=new Date(a.date);
@@ -927,6 +994,11 @@ function renderDonoHorarios(body){
 
 /* --- Equipe --- */
 function renderDonoEquipe(body){
+  if(state.tmp.equipeBarber){
+    const b = DB.users.find(x=>x.id===state.tmp.equipeBarber);
+    if(!b){ state.tmp.equipeBarber=null; }
+    else return renderBarberDetail(body, b);
+  }
   const pending = DB.users.filter(u=>DB.pendingBarberApprovals.includes(u.id));
   const active = DB.users.filter(u=>u.role==='barbeiro' && u.status==='active');
   body.innerHTML = `
@@ -938,9 +1010,13 @@ function renderDonoEquipe(body){
     ${active.length? active.map(u=>{
       const myComms = DB.commissions.filter(c=>c.barberId===u.id);
       return `<div class="list-row"><div class="main"><div class="name">${u.name}</div><div class="sub">${u.email} · ${myComms.length} comissões definidas</div></div>
-      <button class="btn-sm" data-comm="${u.id}">Definir comissões</button></div>`;
+      <div class="row-actions"><button class="btn-sm" data-detail="${u.id}">Ver informações</button>
+      <button class="btn-sm" data-comm="${u.id}">Definir comissões</button></div></div>`;
     }).join('') : `<div class="empty" style="padding:16px;">Nenhum barbeiro ativo ainda.</div>`}
   `;
+  document.querySelectorAll('[data-detail]').forEach(el=> el.onclick=()=>{
+    state.tmp.equipeBarber = el.dataset.detail; state.tmp.equipeSub='painel'; render();
+  });
   document.querySelectorAll('[data-app]').forEach(el=> el.onclick=()=>{
     const u=DB.users.find(x=>x.id===el.dataset.app); u.status='active';
     DB.pendingBarberApprovals=DB.pendingBarberApprovals.filter(id=>id!==u.id);
@@ -952,6 +1028,44 @@ function renderDonoEquipe(body){
     saveDB(); toast("Solicitação rejeitada."); render();
   });
   document.querySelectorAll('[data-comm]').forEach(el=> el.onclick=()=> openCommissionModal(el.dataset.comm));
+}
+
+/* Painel completo de um barbeiro (visível apenas para o dono) */
+function renderBarberDetail(body, b){
+  const sub = state.tmp.equipeSub || 'painel';
+  const tabs=[{k:'painel',l:'Painel'},{k:'agenda',l:'Agenda do dia'},{k:'comissoes',l:'Comissões'},{k:'metas',l:'Metas'},{k:'perfil',l:'Perfil'}];
+  body.innerHTML = `
+    <button class="btn-sm" id="backTeam" style="margin-bottom:14px;">← Voltar para equipe</button>
+    <div class="section-title"><h2>${b.name}</h2></div>
+    <div class="subnav">${tabs.map(t=>`<button class="${sub===t.k?'active':''}" data-bt="${t.k}">${t.l}</button>`).join('')}</div>
+    <div id="bdBody"></div>`;
+  document.getElementById('backTeam').onclick=()=>{ state.tmp.equipeBarber=null; render(); };
+  document.querySelectorAll('[data-bt]').forEach(el=> el.onclick=()=>{ state.tmp.equipeSub=el.dataset.bt; render(); });
+  const area = document.getElementById('bdBody');
+  if(sub==='painel') renderBarbDash(area, b.id);
+  if(sub==='agenda') renderBarbAgenda(area, b.id);
+  if(sub==='comissoes') renderBarbComissoes(area, b.id);
+  if(sub==='metas'){
+    const gs = DB.goals.filter(g=>g.barberId===b.id);
+    area.innerHTML = gs.length ? gs.map(g=>`<div class="list-row"><div class="main">
+      <div class="name">${g.type==='faturamento'?'Faturamento':'Atendimentos'} — ${g.month}</div>
+      <div class="sub">Meta: ${g.type==='faturamento'?money(g.target):g.target} · Prêmio: ${g.reward||'—'}</div></div></div>`).join('')
+      : `<div class="empty" style="padding:16px;">Nenhuma meta definida para este barbeiro.</div>`;
+  }
+  if(sub==='perfil'){
+    const done = DB.appointments.filter(a=>a.barberId===b.id && a.status==='done');
+    const comms = DB.commissions.filter(c=>c.barberId===b.id);
+    area.innerHTML = `<div class="card">
+      <div class="field"><label>E-mail</label><div>${b.email}</div></div>
+      <div class="field"><label>WhatsApp</label><div>${b.whatsapp||'não informado'}</div></div>
+      <div class="field"><label>Instagram</label><div>${b.instagram||'não informado'}</div></div>
+      <div class="field"><label>Desde</label><div>${new Date(b.createdAt||Date.now()).toLocaleDateString('pt-BR')}</div></div>
+      <div class="field"><label>Atendimentos concluídos (total)</label><div>${done.length}</div></div>
+      <div class="field"><label>Serviços com comissão definida</label><div>${comms.length}</div></div>
+      <button class="btn-sm" id="bdComm">Definir comissões</button>
+    </div>`;
+    document.getElementById('bdComm').onclick=()=> openCommissionModal(b.id);
+  }
 }
 function openCommissionModal(barberId){
   if(DB.services.length===0){ toast("Cadastre serviços primeiro."); return; }
@@ -1329,10 +1443,24 @@ document.addEventListener('click', (e)=>{
     if(type==='recovery'){ state.tmp.recoveryToken=token; state.route='reset'; render(); return; }
     try{
       const me = await sbCall('/user', {method:'GET', token});
+      saveSession({access_token:token, refresh_token:hash.get('refresh_token'), email: me && me.email});
+      await syncFromCloud();
       const local = me && me.email ? findUserByEmail(me.email) : null;
       if(local && local.role!=='barbeiro' && local.status!=='active'){ local.status='active'; saveDB(); }
       toast("E-mail confirmado! Sua conta está ativa.");
     }catch(e){ /* link expirado */ }
+    render(); return;
+  }
+  // Sessão salva → entra automaticamente em qualquer dispositivo/navegador
+  loadSession();
+  if(SESSION && SESSION.refresh_token && sbReady()){
+    try{
+      const s = await sbRefresh(SESSION.refresh_token);
+      saveSession({access_token:s.access_token, refresh_token:s.refresh_token, email:(s.user&&s.user.email)||SESSION.email});
+      await syncFromCloud();
+      const u = SESSION.email ? findUserByEmail(SESSION.email) : null;
+      if(u && (u.status==='active')){ state.user=u; state.route='app'; }
+    }catch(e){ saveSession(null); }
   }
   render();
 })();
