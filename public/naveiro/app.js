@@ -42,8 +42,8 @@ async function sbCall(path, {method="POST", body=null, token=null}={}){
   }
   return data;
 }
-const sbSignUp = (email,password) =>
-  sbCall(`/signup?redirect_to=${encodeURIComponent(window.location.origin + "/")}`, {body:{email,password}});
+const sbSignUp = (email,password,meta) =>
+  sbCall(`/signup?redirect_to=${encodeURIComponent(window.location.origin + "/")}`, {body:{email,password,data:meta||{}}});
 const sbSignIn = (email,password) => sbCall(`/token?grant_type=password`, {body:{email,password}});
 const sbRecover = (email) =>
   sbCall(`/recover?redirect_to=${encodeURIComponent(window.location.origin + "/")}`, {body:{email}});
