@@ -214,16 +214,25 @@ async function doLogin(){
   let u=findUserByEmail(email);
   if(sbReady()){
     const btn=document.getElementById('btnLogin'); btn.disabled=true; btn.textContent="Entrando…";
+    let sess=null;
     try{
-      await sbSignIn(email, pass);
+      sess = await sbSignIn(email, pass);
     }catch(err){
       btn.disabled=false; btn.textContent="Entrar";
       return fail(translateAuthError(err.message));
     }
+    saveSession({access_token:sess.access_token, refresh_token:sess.refresh_token, email});
+    btn.textContent="Carregando seus dados…";
+    await syncFromCloud();
     btn.disabled=false; btn.textContent="Entrar";
+    u = findUserByEmail(email);
+    const meta = (sess.user && sess.user.user_metadata) || {};
     if(!u){
-      u = {id:uid(), name:email.split('@')[0], email, password:"", role:'cliente', status:'active', whatsapp:"", instagram:"", createdAt:Date.now()};
+      const role = meta.role || 'cliente';
+      u = {id:uid(), name: meta.name || email.split('@')[0], email, password:"", role,
+        status: role==='barbeiro' ? 'pending' : 'active', whatsapp:"", instagram:"", createdAt:Date.now()};
       DB.users.push(u);
+      if(role==='barbeiro' && !DB.pendingBarberApprovals.includes(u.id)) DB.pendingBarberApprovals.push(u.id);
     }
     // E-mail confirmado pelo backend → conta passa a existir de fato
     if(u.role!=='barbeiro' && u.status!=='active'){ u.status='active'; }
