@@ -994,6 +994,11 @@ function renderDonoHorarios(body){
 
 /* --- Equipe --- */
 function renderDonoEquipe(body){
+  if(state.tmp.equipeBarber){
+    const b = DB.users.find(x=>x.id===state.tmp.equipeBarber);
+    if(!b){ state.tmp.equipeBarber=null; }
+    else return renderBarberDetail(body, b);
+  }
   const pending = DB.users.filter(u=>DB.pendingBarberApprovals.includes(u.id));
   const active = DB.users.filter(u=>u.role==='barbeiro' && u.status==='active');
   body.innerHTML = `
@@ -1005,9 +1010,13 @@ function renderDonoEquipe(body){
     ${active.length? active.map(u=>{
       const myComms = DB.commissions.filter(c=>c.barberId===u.id);
       return `<div class="list-row"><div class="main"><div class="name">${u.name}</div><div class="sub">${u.email} · ${myComms.length} comissões definidas</div></div>
-      <button class="btn-sm" data-comm="${u.id}">Definir comissões</button></div>`;
+      <div class="row-actions"><button class="btn-sm" data-detail="${u.id}">Ver informações</button>
+      <button class="btn-sm" data-comm="${u.id}">Definir comissões</button></div></div>`;
     }).join('') : `<div class="empty" style="padding:16px;">Nenhum barbeiro ativo ainda.</div>`}
   `;
+  document.querySelectorAll('[data-detail]').forEach(el=> el.onclick=()=>{
+    state.tmp.equipeBarber = el.dataset.detail; state.tmp.equipeSub='painel'; render();
+  });
   document.querySelectorAll('[data-app]').forEach(el=> el.onclick=()=>{
     const u=DB.users.find(x=>x.id===el.dataset.app); u.status='active';
     DB.pendingBarberApprovals=DB.pendingBarberApprovals.filter(id=>id!==u.id);
@@ -1019,6 +1028,44 @@ function renderDonoEquipe(body){
     saveDB(); toast("Solicitação rejeitada."); render();
   });
   document.querySelectorAll('[data-comm]').forEach(el=> el.onclick=()=> openCommissionModal(el.dataset.comm));
+}
+
+/* Painel completo de um barbeiro (visível apenas para o dono) */
+function renderBarberDetail(body, b){
+  const sub = state.tmp.equipeSub || 'painel';
+  const tabs=[{k:'painel',l:'Painel'},{k:'agenda',l:'Agenda do dia'},{k:'comissoes',l:'Comissões'},{k:'metas',l:'Metas'},{k:'perfil',l:'Perfil'}];
+  body.innerHTML = `
+    <button class="btn-sm" id="backTeam" style="margin-bottom:14px;">← Voltar para equipe</button>
+    <div class="section-title"><h2>${b.name}</h2></div>
+    <div class="subnav">${tabs.map(t=>`<button class="${sub===t.k?'active':''}" data-bt="${t.k}">${t.l}</button>`).join('')}</div>
+    <div id="bdBody"></div>`;
+  document.getElementById('backTeam').onclick=()=>{ state.tmp.equipeBarber=null; render(); };
+  document.querySelectorAll('[data-bt]').forEach(el=> el.onclick=()=>{ state.tmp.equipeSub=el.dataset.bt; render(); });
+  const area = document.getElementById('bdBody');
+  if(sub==='painel') renderBarbDash(area, b.id);
+  if(sub==='agenda') renderBarbAgenda(area, b.id);
+  if(sub==='comissoes') renderBarbComissoes(area, b.id);
+  if(sub==='metas'){
+    const gs = DB.goals.filter(g=>g.barberId===b.id);
+    area.innerHTML = gs.length ? gs.map(g=>`<div class="list-row"><div class="main">
+      <div class="name">${g.type==='faturamento'?'Faturamento':'Atendimentos'} — ${g.month}</div>
+      <div class="sub">Meta: ${g.type==='faturamento'?money(g.target):g.target} · Prêmio: ${g.reward||'—'}</div></div></div>`).join('')
+      : `<div class="empty" style="padding:16px;">Nenhuma meta definida para este barbeiro.</div>`;
+  }
+  if(sub==='perfil'){
+    const done = DB.appointments.filter(a=>a.barberId===b.id && a.status==='done');
+    const comms = DB.commissions.filter(c=>c.barberId===b.id);
+    area.innerHTML = `<div class="card">
+      <div class="field"><label>E-mail</label><div>${b.email}</div></div>
+      <div class="field"><label>WhatsApp</label><div>${b.whatsapp||'não informado'}</div></div>
+      <div class="field"><label>Instagram</label><div>${b.instagram||'não informado'}</div></div>
+      <div class="field"><label>Desde</label><div>${new Date(b.createdAt||Date.now()).toLocaleDateString('pt-BR')}</div></div>
+      <div class="field"><label>Atendimentos concluídos (total)</label><div>${done.length}</div></div>
+      <div class="field"><label>Serviços com comissão definida</label><div>${comms.length}</div></div>
+      <button class="btn-sm" id="bdComm">Definir comissões</button>
+    </div>`;
+    document.getElementById('bdComm').onclick=()=> openCommissionModal(b.id);
+  }
 }
 function openCommissionModal(barberId){
   if(DB.services.length===0){ toast("Cadastre serviços primeiro."); return; }
