@@ -418,7 +418,7 @@ function renderVerifyBarberPending(){
 }
 
 /* ============================== APP SHELL ============================== */
-function logout(){ state.user=null; state.route='login'; render(); }
+function logout(){ saveSession(null); state.user=null; state.route='login'; render(); }
 
 function renderApp(){
   const u = state.user;
