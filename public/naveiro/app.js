@@ -800,8 +800,9 @@ function openMonthRevenueModal(barberId){
   `);
 }
 
-function renderBarbAgenda(body){
-  const today = DB.appointments.filter(a=>a.barberId===state.user.id && a.date===todayISO())
+function renderBarbAgenda(body, barberId){
+  const bid = barberId || state.user.id;
+  const today = DB.appointments.filter(a=>a.barberId===bid && a.date===todayISO())
     .sort((a,b)=> a.time.localeCompare(b.time));
   if(today.length===0){ body.innerHTML=`<div class="empty"><span class="ic">🗓️</span>Nenhum agendamento para hoje.</div>`; return; }
   body.innerHTML = today.map(a=>{
@@ -825,7 +826,7 @@ function renderBarbAgenda(body){
   });
   document.querySelectorAll('[data-cancel]').forEach(el=> el.onclick=(e)=>{
     const id = e.target.closest('.list-row').dataset.id;
-    const apt = DB.appointments.find(x=>x.id===id); apt.status='cancelled'; saveDB(); toast("Agendamento cancelado."); renderBarbAgenda(body);
+    const apt = DB.appointments.find(x=>x.id===id); apt.status='cancelled'; saveDB(); toast("Agendamento cancelado."); renderBarbAgenda(body, bid);
   });
 }
 function openClientContactModal(clientId){
