@@ -880,16 +880,17 @@ function buildAISuggestions(barberId){
   return out.slice(0,6);
 }
 
-function renderBarbComissoes(body){
-  const myComms = DB.commissions.filter(c=>c.barberId===state.user.id);
-  const doneAppts = DB.appointments.filter(a=>a.barberId===state.user.id && a.status==='done');
+function renderBarbComissoes(body, barberId){
+  const bid = barberId || state.user.id;
+  const myComms = DB.commissions.filter(c=>c.barberId===bid);
+  const doneAppts = DB.appointments.filter(a=>a.barberId===bid && a.status==='done');
   const [filter,setFilter] = [state.tmp.commFilter||'mensal', v=>{state.tmp.commFilter=v;}];
   body.innerHTML = `
     <div class="subnav">
       ${['diario','semanal','mensal'].map(f=>`<button class="${filter===f?'active':''}" data-cf="${f}">${f==='diario'?'Diário':f==='semanal'?'Semanal':'Mensal'}</button>`).join('')}
     </div>
     <div id="commArea"></div>`;
-  document.querySelectorAll('[data-cf]').forEach(el=> el.onclick=()=>{ state.tmp.commFilter=el.dataset.cf; renderBarbComissoes(body); });
+  document.querySelectorAll('[data-cf]').forEach(el=> el.onclick=()=>{ state.tmp.commFilter=el.dataset.cf; renderBarbComissoes(body, bid); });
   const now=new Date();
   const inRange = doneAppts.filter(a=>{
     const d=new Date(a.date);
